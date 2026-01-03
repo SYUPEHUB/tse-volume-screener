@@ -79,19 +79,27 @@ def fetch_ohlcv(ticker: str, period_days: int) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
 
+    # yfinance対策：MultiIndex列をフラット化
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
     df = df.reset_index()
     if "Date" not in df.columns:
         df.rename(columns={df.columns[0]: "Date"}, inplace=True)
 
-    # 必要列だけ
+    # 必要な列（Volumeを必ず含める）
     keep_cols = ["Date", "Open", "Close", "Volume"]
     for c in keep_cols:
         if c not in df.columns:
             return pd.DataFrame()
 
     df = df[keep_cols].dropna()
-    return df
 
+    # VolumeがDataFrameになる場合の保険
+    if isinstance(df["Volume"], pd.DataFrame):
+        df["Volume"] = df["Volume"].iloc[:, 0]
+
+    return df
 
 def safe_pct_change(today_close: float, prev_close: float) -> float:
     if prev_close <= 0:
