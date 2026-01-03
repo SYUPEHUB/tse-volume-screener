@@ -134,51 +134,58 @@ if run:
         if df.empty or len(df) < min_bars:
             continue
 
-        # 出来高
-        vol = df["Volume"].astype(float)
+        # 出来高（必ず1本の数値列にする）
+vol = df["Volume"]
+if isinstance(vol, pd.DataFrame):
+    vol = vol.iloc[:, 0]
+vol = pd.to_numeric(vol, errors="coerce").astype(float)
 
-        # 終値（当日/前日）と当日騰落率
-        today_close = float(df["Close"].iloc[-1])
-        prev_close = float(df["Close"].iloc[-2])
-        day_change_pct = safe_pct_change(today_close, prev_close)
-        if pd.isna(day_change_pct):
-            continue
+# データ不足ならスキップ
+if vol.dropna().shape[0] < (recent_days + base_days + spike_days + 5):
+    continue
 
-        # 価格未走りフィルタ：当日騰落率が大きすぎるものを除外
-        if day_change_pct > float(max_day_change):
-            continue
+# 終値（当日/前日）と当日騰落率
+today_close = float(df["Close"].iloc[-1])
+prev_close = float(df["Close"].iloc[-2])
+day_change_pct = safe_pct_change(today_close, prev_close)
+if pd.isna(day_change_pct):
+    continue
 
-        # じわ増え（直近平均 vs 比較平均）
-        recent_avg = vol.tail(recent_days).mean()
-        base_window = vol.tail(recent_days + base_days).head(base_days)
-        base_avg = base_window.mean()
+# 価格未走りフィルタ
+if day_change_pct > float(max_day_change):
+    continue
 
-        if pd.isna(recent_avg) or pd.isna(base_avg) or base_avg <= 0:
-            continue
+# じわ増え（直近平均 vs 比較平均）※平均値を必ずfloatに確定
+recent_avg = float(vol.tail(recent_days).mean())
+base_slice = vol.iloc[-(recent_days + base_days):-recent_days]  # 今日側recent_daysを除いた比較期間
+base_avg = float(base_slice.mean())
 
-        if base_avg < float(min_base_avg_vol):
-            continue
+if pd.isna(recent_avg) or pd.isna(base_avg) or base_avg <= 0:
+    continue
 
-        recent_ratio = recent_avg / base_avg
-        if recent_ratio < float(min_recent_ratio):
-            continue
+if base_avg < float(min_base_avg_vol):
+    continue
 
-        # 当日出来高倍率（当日/過去spike_days平均※当日は除外）
-        today_vol = float(vol.iloc[-1])
-        spike_base_window = vol.tail(spike_days + 1).head(spike_days)
-        spike_base = spike_base_window.mean()
+recent_ratio = recent_avg / base_avg
+if recent_ratio < float(min_recent_ratio):
+    continue
 
-        if pd.isna(spike_base) or spike_base <= 0:
-            continue
+# 当日出来高倍率（当日/過去spike_days平均）※当日を除外、平均はfloat確定
+today_vol = float(vol.iloc[-1])
+spike_slice = vol.iloc[-(spike_days + 1):-1]  # 直近spike_days（当日除外）
+spike_base = float(spike_slice.mean())
 
-        today_ratio = today_vol / spike_base
-        if today_ratio < float(min_spike):
-            continue
+if pd.isna(spike_base) or spike_base <= 0:
+    continue
 
-        # 連続性：前日出来高も平均超え（spike_base を使う）
-        prev_vol = float(vol.iloc[-2])
-        if prev_vol < spike_base:
-            continue
+today_ratio = today_vol / spike_base
+if today_ratio < float(min_spike):
+    continue
+
+# 連続性：前日出来高も平均超え
+prev_vol = float(vol.iloc[-2])
+if prev_vol < spike_base:
+    continue
 
         rows.append({
             "Ticker": t,
