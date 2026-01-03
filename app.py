@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="出来高初動スクリーナー（東証）", layout="wide")
 
 st.title("出来高初動スクリーナー（東証）")
-st.caption("短期向け：出来高爆増の初動候補（出来高倍率 + 連続性 + 価格未走り）を抽出します。")
+st.caption("短期向け：出来高爆増の初動候補（当日出来高倍率 + 連続性 + 価格未走り）を抽出します。")
 
 # ----------------------------
 # Sidebar (settings)
@@ -15,12 +15,12 @@ with st.sidebar:
     st.header("設定")
 
     codes_text = st.text_area(
-        "東証コード（4桁）を改行 or カンマ区切りで入力（例：7203,6758…）",
+        "東証コード（4桁）を改行 or カンマ区切りで入力",
         value="7203\n6758\n9984\n8035\n4063\n9432",
-        height=180
+        height=170
     )
 
-    st.subheader("データ取得")
+    st.subheader("取得")
     lookback_days = st.slider("取得期間（日）", 60, 260, 160, 10)
 
     st.subheader("出来高（じわ増え確認）")
@@ -32,11 +32,11 @@ with st.sidebar:
     spike_days = st.slider("当日倍率の比較日数（営業日）", 10, 60, 20, 5)
     min_spike = st.slider("当日出来高倍率（当日/平均）下限", 1.0, 10.0, 3.0, 0.5)
 
-    st.subheader("価格（未走り条件）")
+    st.subheader("価格（未走り）")
     max_day_change = st.slider("当日騰落率 上限（%）", 1, 15, 5, 1)
 
     st.subheader("最低流動性")
-    min_base_avg_vol = st.number_input("比較期間（base）平均出来高の下限", min_value=0, value=100000, step=50000)
+    min_base_avg_vol = st.number_input("比較期間（base）平均出来高 下限", min_value=0, value=100000, step=50000)
 
     st.subheader("表示")
     top_n = st.slider("表示件数", 10, 200, 50, 10)
@@ -52,13 +52,17 @@ def parse_codes(text: str) -> list[str]:
         r = r.strip()
         if not r:
             continue
-        # 4桁コード → 東証(.T)に正規化
         if r.isdigit() and len(r) == 4:
             codes.append(r + ".T")
         else:
-            # 既に 7203.T などで入力されてもOK
             codes.append(r)
     return sorted(set(codes))
+
+
+def safe_pct_change(today_close: float, prev_close: float) -> float:
+    if prev_close <= 0:
+        return float("nan")
+    return (today_close - prev_close) / prev_close * 100.0
 
 
 @st.cache_data(show_spinner=False)
@@ -79,7 +83,7 @@ def fetch_ohlcv(ticker: str, period_days: int) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
 
-    # yfinance対策：MultiIndex列をフラット化
+    # yfinance対策：列がMultiIndex(2段)になることがある
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
@@ -87,24 +91,18 @@ def fetch_ohlcv(ticker: str, period_days: int) -> pd.DataFrame:
     if "Date" not in df.columns:
         df.rename(columns={df.columns[0]: "Date"}, inplace=True)
 
-    # 必要な列（Volumeを必ず含める）
-    keep_cols = ["Date", "Open", "Close", "Volume"]
-    for c in keep_cols:
+    needed = ["Date", "Open", "Close", "Volume"]
+    for c in needed:
         if c not in df.columns:
             return pd.DataFrame()
 
-    df = df[keep_cols].dropna()
+    df = df[needed].dropna()
 
-    # VolumeがDataFrameになる場合の保険
+    # 念のため Volume を1本に固定
     if isinstance(df["Volume"], pd.DataFrame):
         df["Volume"] = df["Volume"].iloc[:, 0]
 
     return df
-
-def safe_pct_change(today_close: float, prev_close: float) -> float:
-    if prev_close <= 0:
-        return float("nan")
-    return (today_close - prev_close) / prev_close * 100.0
 
 
 # ----------------------------
@@ -112,9 +110,7 @@ def safe_pct_change(today_close: float, prev_close: float) -> float:
 # ----------------------------
 codes = parse_codes(codes_text)
 
-run = st.button("スクリーニング実行", type="primary")
-
-if run:
+if st.button("スクリーニング実行", type="primary"):
     if len(codes) == 0:
         st.error("銘柄コードを入力してください。")
         st.stop()
@@ -124,90 +120,87 @@ if run:
     rows = []
     progress = st.progress(0)
 
-    # 必要な最低データ本数を見積もる（余裕を持たせる）
-    min_bars = max(recent_days + base_days + 5, spike_days + 5, base_days + 10)
-
     for i, t in enumerate(codes, start=1):
-        df = fetch_ohlcv(t, lookback_days)
         progress.progress(i / len(codes))
 
-        if df.empty or len(df) < min_bars:
+        df = fetch_ohlcv(t, lookback_days)
+        if df.empty:
             continue
 
-        # 出来高（必ず1本の数値列にする）
-vol = df["Volume"]
-if isinstance(vol, pd.DataFrame):
-    vol = vol.iloc[:, 0]
-vol = pd.to_numeric(vol, errors="coerce").astype(float)
+        # Volumeを必ず数値Seriesにする
+        vol = df["Volume"]
+        if isinstance(vol, pd.DataFrame):
+            vol = vol.iloc[:, 0]
+        vol = pd.to_numeric(vol, errors="coerce").astype(float)
 
-# データ不足ならスキップ
-if vol.dropna().shape[0] < (recent_days + base_days + spike_days + 5):
-    continue
+        # データが足りない銘柄はスキップ
+        if vol.dropna().shape[0] < (recent_days + base_days + spike_days + 5):
+            continue
 
-# 終値（当日/前日）と当日騰落率
-today_close = float(df["Close"].iloc[-1])
-prev_close = float(df["Close"].iloc[-2])
-day_change_pct = safe_pct_change(today_close, prev_close)
-if pd.isna(day_change_pct):
-    continue
+        # 価格（当日/前日）騰落率
+        today_close = float(df["Close"].iloc[-1])
+        prev_close = float(df["Close"].iloc[-2])
+        day_change_pct = safe_pct_change(today_close, prev_close)
+        if pd.isna(day_change_pct):
+            continue
 
-# 価格未走りフィルタ
-if day_change_pct > float(max_day_change):
-    continue
+        # 価格未走りフィルタ
+        if day_change_pct > float(max_day_change):
+            continue
 
-# じわ増え（直近平均 vs 比較平均）※平均値を必ずfloatに確定
-recent_avg = float(vol.tail(recent_days).mean())
-base_slice = vol.iloc[-(recent_days + base_days):-recent_days]  # 今日側recent_daysを除いた比較期間
-base_avg = float(base_slice.mean())
+        # じわ増え：直近平均 vs 比較平均（必ずfloat）
+        recent_avg = float(vol.tail(recent_days).mean())
+        base_slice = vol.iloc[-(recent_days + base_days):-recent_days]  # 直近recent_daysを除外した比較期間
+        base_avg = float(base_slice.mean())
 
-if pd.isna(recent_avg) or pd.isna(base_avg) or base_avg <= 0:
-    continue
+        if pd.isna(recent_avg) or pd.isna(base_avg) or base_avg <= 0:
+            continue
 
-if base_avg < float(min_base_avg_vol):
-    continue
+        if base_avg < float(min_base_avg_vol):
+            continue
 
-recent_ratio = recent_avg / base_avg
-if recent_ratio < float(min_recent_ratio):
-    continue
+        recent_ratio = recent_avg / base_avg
+        if recent_ratio < float(min_recent_ratio):
+            continue
 
-# 当日出来高倍率（当日/過去spike_days平均）※当日を除外、平均はfloat確定
-today_vol = float(vol.iloc[-1])
-spike_slice = vol.iloc[-(spike_days + 1):-1]  # 直近spike_days（当日除外）
-spike_base = float(spike_slice.mean())
+        # 当日出来高倍率：当日 / (直近spike_days平均 ※当日除外)
+        today_vol = float(vol.iloc[-1])
+        spike_slice = vol.iloc[-(spike_days + 1):-1]  # 当日を除外
+        spike_base = float(spike_slice.mean())
 
-if pd.isna(spike_base) or spike_base <= 0:
-    continue
+        if pd.isna(spike_base) or spike_base <= 0:
+            continue
 
-today_ratio = today_vol / spike_base
-if today_ratio < float(min_spike):
-    continue
+        today_ratio = today_vol / spike_base
+        if today_ratio < float(min_spike):
+            continue
 
-# 連続性：前日出来高も平均超え
-prev_vol = float(vol.iloc[-2])
-if prev_vol < spike_base:
-    continue
+        # 連続性：前日も平均超え
+        prev_vol = float(vol.iloc[-2])
+        if prev_vol < spike_base:
+            continue
 
-      rows.append({
-        "Ticker": t,
-        "Code": t.replace(".T", ""),
-        "最終日": df["Date"].iloc[-1].date(),
-        "終値": today_close,
-        "当日騰落率(%)": day_change_pct,
-        "当日出来高": int(today_vol),
-        "当日出来高倍率": today_ratio,
-        "直近平均出来高": int(recent_avg),
-        "比較平均出来高": int(base_avg),
-        "直近/比較倍率": recent_ratio,
-    })  
-        
+        rows.append({
+            "Ticker": t,
+            "Code": t.replace(".T", ""),
+            "最終日": df["Date"].iloc[-1].date(),
+            "終値": today_close,
+            "当日騰落率(%)": day_change_pct,
+            "当日出来高": int(today_vol),
+            "当日出来高倍率": today_ratio,
+            "直近平均出来高": int(recent_avg),
+            "比較平均出来高": int(base_avg),
+            "直近/比較倍率": recent_ratio,
+        })
+
     if not rows:
         st.warning("条件に合う銘柄が見つかりませんでした（またはデータ取得できませんでした）。")
         st.stop()
 
-    out = pd.DataFrame(rows)
-
-    # ランキング：当日出来高倍率 → 直近/比較倍率 の順に強いものを上へ
-    out = out.sort_values(["当日出来高倍率", "直近/比較倍率"], ascending=False).head(top_n)
+    out = pd.DataFrame(rows).sort_values(
+        ["当日出来高倍率", "直近/比較倍率"],
+        ascending=False
+    ).head(top_n)
 
     st.subheader("抽出結果（短期・初動候補）")
     st.dataframe(
@@ -229,4 +222,4 @@ if prev_vol < spike_base:
     )
 
 st.markdown("---")
-st.caption("注意：yfinanceは非公式データ取得のため、取得制限・欠損が起きることがあります。引け後の実行が安定します。")
+st.caption("注意：yfinanceは非公式データ取得のため、欠損や取得制限が起きることがあります。引け後の実行が安定します。")
