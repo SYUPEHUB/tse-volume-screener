@@ -187,19 +187,19 @@ prev_vol = float(vol.iloc[-2])
 if prev_vol < spike_base:
     continue
 
-        rows.append({
-            "Ticker": t,
-            "Code": t.replace(".T", ""),
-            "最終日": df["Date"].iloc[-1].date(),
-            "終値": today_close,
-            "当日騰落率(%)": day_change_pct,
-            "当日出来高": int(today_vol),
-            "当日出来高倍率": today_ratio,
-            "直近平均出来高": int(recent_avg),
-            "比較平均出来高": int(base_avg),
-            "直近/比較倍率": recent_ratio,
-        })
-
+      rows.append({
+        "Ticker": t,
+        "Code": t.replace(".T", ""),
+        "最終日": df["Date"].iloc[-1].date(),
+        "終値": today_close,
+        "当日騰落率(%)": day_change_pct,
+        "当日出来高": int(today_vol),
+        "当日出来高倍率": today_ratio,
+        "直近平均出来高": int(recent_avg),
+        "比較平均出来高": int(base_avg),
+        "直近/比較倍率": recent_ratio,
+    })  
+        
     if not rows:
         st.warning("条件に合う銘柄が見つかりませんでした（またはデータ取得できませんでした）。")
         st.stop()
